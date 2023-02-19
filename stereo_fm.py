@@ -8,65 +8,7 @@ import gnuradio.gr
 import numpy
 import osmosdr
 import asyncio
-
-
-def make_source(sample_rate):
-    source = osmosdr.source(args='rtl=0')
-    source.set_freq_corr(0, 0)
-    source.set_dc_offset_mode(0, 0)
-    source.set_iq_balance_mode(0, 0)
-    source.set_gain_mode(False, 0)
-    source.set_if_gain(20, 0)
-    source.set_bb_gain(20, 0)
-    source.set_antenna("", 0)
-    source.set_bandwidth(0, 0)
-    source.set_gain(29.7)
-    source.set_sample_rate(sample_rate)
-    source.set_center_freq(88500000)
-    return source
-
-
-def make_resampler(num, denom):
-    return gnuradio.filter.rational_resampler_ccc(
-        interpolation=num,
-        decimation=denom,
-        taps=[],
-        fractional_bw=0.4,
-    )
-
-
-def make_resampler_r(num, denom):
-    return gnuradio.filter.rational_resampler_fff(
-        interpolation=num,
-        decimation=denom,
-        taps=[],
-        fractional_bw=0.4,
-    )
-
-
-def make_filter(decim, gain, sample_rate, cutoff_freq, transition_width):
-    taps = gnuradio.filter.firdes.low_pass(
-        gain,
-        sample_rate,
-        cutoff_freq,
-        transition_width,
-        firdes.WIN_HAMMING,
-        6.76,
-    )
-    filt = gnuradio.filter.fir_filter_ccf(decim, taps)
-    return filt
-
-
-def make_wfm(input_rate, decim):
-    return gnuradio.analog.wfm_rcv(
-        quad_rate=input_rate,
-        audio_decimation=decim,
-    )
-
-
-def make_audio(sample_rate):
-    return gnuradio.audio.sink(sample_rate, "hw:0,0", True)
-
+import gnuradio.network
 
 class CaptureBlock(gnuradio.gr.sync_block, discord.AudioSource):
     def __init__(self):
@@ -107,8 +49,12 @@ class CaptureBlock(gnuradio.gr.sync_block, discord.AudioSource):
     def read(self):
         if not self.playback_started:
             return bytes(self.playback_length)
+        if self.buffer_len < self.playback_length:
+            #print("Warning: low buffer")
+            return bytes(self.playback_length)
 
         buf = bytearray(self.playback_length)
+        #print("self.playback_length:", self.playback_length, "self.buffer_len:", self.buffer_len)
         i = 0
         while i < self.playback_length:
             next_buf = self.buffer.pop(0)
@@ -131,23 +77,11 @@ class CaptureBlock(gnuradio.gr.sync_block, discord.AudioSource):
 class RadioBlock(gnuradio.gr.top_block):
     def __init__(self):
         gnuradio.gr.top_block.__init__(self, "Discord Radio")
-        self.source_sample_rate = 2400000
-        self.audio_sample_rate = 48000
-        self.wfm_sample_rate = 200000
-        self.wfm_output_rate = 200000 // 4
 
-        self.source = make_source(self.source_sample_rate)
-        self.resamp1 = make_resampler(1, self.source_sample_rate // self.wfm_sample_rate)
-        self.wfm = make_wfm(self.wfm_sample_rate, 4)
-        self.resamp2 = make_resampler_r(48, 50)
+        self.source = gnuradio.network.udp_source(gnuradio.gr.sizeof_float, 1, 1234, 0, 1472, False, False, False) # type, vect len?, port, header, packet size, notify missed frames, source 0 if no data, ipv6 support
         self.capture_block = CaptureBlock()
-        # self.audio = make_audio(self.audio_sample_rate)
 
-        self.connect((self.source, 0), (self.resamp1, 0))
-        self.connect((self.resamp1, 0), (self.wfm, 0))
-        self.connect((self.wfm, 0), (self.resamp2, 0))
-        # self.connect((self.resamp2, 0), (self.audio, 0))
-        self.connect((self.resamp2, 0), (self.capture_block, 0))
+        self.connect((self.source, 0), (self.capture_block, 0))
 
 
 intents = discord.Intents.default()
@@ -169,18 +103,17 @@ class BotCommands(discord_commands.Cog):
 
     @discord_commands.command()
     async def join(self, ctx, *, channel: discord.VoiceChannel):
-        print("joining")
         if ctx.voice_client is not None:
             return await ctx.voice_client.move_to(channel)
 
         await channel.connect()
 
+    """
     @discord_commands.command()
     async def fm(self, ctx, *, freq):
-        print("fm")
         freq_mhz = float(freq)
         freq = float(freq_mhz) * 1000000
-        self.radio.source.set_center_freq(freq)
+        #self.radio.source.set_center_freq(freq)
 
         if not ctx.voice_client.is_playing():
             source = discord.PCMVolumeTransformer(self.radio.capture_block)
@@ -188,14 +121,23 @@ class BotCommands(discord_commands.Cog):
             self.radio.start()
 
         await ctx.send(f'Tuning {freq_mhz}MHz FM')
+    """
+
+    @discord_commands.command()
+    async def start(self, ctx):
+        if not ctx.voice_client.is_playing():
+            source = discord.PCMVolumeTransformer(self.radio.capture_block)
+            ctx.voice_client.play(source)
+            self.radio.start()
+
+        await ctx.send(f'Started playing')
 
     @discord_commands.command()
     async def stop(self, ctx):
-        print("stopping")
         self.radio.stop()
         await ctx.voice_client.disconnect() 
 
-    @fm.before_invoke
+    @start.before_invoke
     async def ensure_voice(self, ctx):
         if ctx.voice_client is None:
             if ctx.author.voice:
@@ -205,14 +147,12 @@ class BotCommands(discord_commands.Cog):
                 raise discord_commands.CommandError('User not connected to voice channel')
 
 async def main():
-    print("starting")
     import sys
     token = sys.argv[1]
     top_block = RadioBlock()
     discord.utils.setup_logging()
     async with bot:
         await bot.add_cog(BotCommands(bot, top_block))
-        #bot.run(token)
         await bot.start(token)
 
 if __name__ == '__main__':
