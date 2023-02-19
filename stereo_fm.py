@@ -7,6 +7,7 @@ import gnuradio.filter
 import gnuradio.gr
 import numpy
 import osmosdr
+import asyncio
 
 
 def make_source(sample_rate):
@@ -29,8 +30,8 @@ def make_resampler(num, denom):
     return gnuradio.filter.rational_resampler_ccc(
         interpolation=num,
         decimation=denom,
-        taps=None,
-        fractional_bw=None,
+        taps=[],
+        fractional_bw=0.4,
     )
 
 
@@ -38,8 +39,8 @@ def make_resampler_r(num, denom):
     return gnuradio.filter.rational_resampler_fff(
         interpolation=num,
         decimation=denom,
-        taps=None,
-        fractional_bw=None,
+        taps=[],
+        fractional_bw=0.4,
     )
 
 
@@ -149,9 +150,11 @@ class RadioBlock(gnuradio.gr.top_block):
         self.connect((self.resamp2, 0), (self.capture_block, 0))
 
 
-
+intents = discord.Intents.default()
+intents.message_content = True
 bot = discord_commands.Bot(command_prefix=discord_commands.when_mentioned_or('!'),
-                           description='Radio bot')
+                           description='Radio bot',
+                           intents=intents)
 
 
 @bot.event
@@ -166,6 +169,7 @@ class BotCommands(discord_commands.Cog):
 
     @discord_commands.command()
     async def join(self, ctx, *, channel: discord.VoiceChannel):
+        print("joining")
         if ctx.voice_client is not None:
             return await ctx.voice_client.move_to(channel)
 
@@ -173,6 +177,7 @@ class BotCommands(discord_commands.Cog):
 
     @discord_commands.command()
     async def fm(self, ctx, *, freq):
+        print("fm")
         freq_mhz = float(freq)
         freq = float(freq_mhz) * 1000000
         self.radio.source.set_center_freq(freq)
@@ -186,6 +191,7 @@ class BotCommands(discord_commands.Cog):
 
     @discord_commands.command()
     async def stop(self, ctx):
+        print("stopping")
         self.radio.stop()
         await ctx.voice_client.disconnect() 
 
@@ -198,10 +204,16 @@ class BotCommands(discord_commands.Cog):
                 await ctx.send('You must be in a voice channel to use that')
                 raise discord_commands.CommandError('User not connected to voice channel')
 
-
-if __name__ == '__main__':
+async def main():
+    print("starting")
     import sys
     token = sys.argv[1]
     top_block = RadioBlock()
-    bot.add_cog(BotCommands(bot, top_block))
-    bot.run(token)
+    discord.utils.setup_logging()
+    async with bot:
+        await bot.add_cog(BotCommands(bot, top_block))
+        #bot.run(token)
+        await bot.start(token)
+
+if __name__ == '__main__':
+    asyncio.run(main())
