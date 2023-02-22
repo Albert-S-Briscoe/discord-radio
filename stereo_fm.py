@@ -9,6 +9,8 @@ import numpy
 import osmosdr
 import asyncio
 import gnuradio.network
+import struct
+import socket
 
 class CaptureBlock(gnuradio.gr.sync_block, discord.AudioSource):
     def __init__(self):
@@ -122,6 +124,38 @@ class BotCommands(discord_commands.Cog):
 
         await ctx.send(f'Tuning {freq_mhz}MHz FM')
     """
+
+    @discord_commands.command()
+    async def msg(self, ctx, *, inp):
+        fields = bytes(inp, 'utf-8').split(b' ')
+        name_str = fields[0]
+        value_str = fields[1] if len(fields) > 1 else b''
+        print("name_str:", name_str, "value_str:", value_str)
+
+        floating = True
+        try:
+            float(value_str)
+        except ValueError:
+            print("note: not a double?")
+            floating = False
+
+        if floating:
+            value = struct.pack('>d', float(value_str))
+            value_data = b''.join((b'\x04', value))
+        else:
+            value_len = struct.pack('>H', len(value_str))
+            value_data = b''.join((b'\x02', value_len, value_str))
+
+        name_len = struct.pack('>H', len(name_str))
+        full_data = b''.join((b'\x07\x02', name_len, name_str, value_data))
+
+        print("full_data:", full_data)
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.sendto(full_data, ('127.0.0.1', 1325))
+
+    @discord_commands.command()
+    async def preset(self, ctx, *, preset):
+        await self.msg(ctx, inp=''.join(('preset ', preset)))
 
     @discord_commands.command()
     async def start(self, ctx):
